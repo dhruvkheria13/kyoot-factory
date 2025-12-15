@@ -47,18 +47,9 @@ def get_next_id(df, type_prefix):
         return f"{type_prefix}-{len(type_rows)+1:03d}"
 
 def update_database_from_editor(original_df, edited_subset):
-    """
-    Updates the main dataframe based on changes made in a filtered view (editor).
-    Matches rows based on 'ID'.
-    """
-    # Set index to ID for easier updating
     df_indexed = original_df.set_index("ID")
     subset_indexed = edited_subset.set_index("ID")
-    
-    # Update rows in original with rows from subset
     df_indexed.update(subset_indexed)
-    
-    # Reset index and return
     return df_indexed.reset_index()
 
 # --- Main App Interface ---
@@ -67,8 +58,14 @@ def main():
     
     # Load Data
     df = load_transactions()
-    # Ensure Date column is datetime objects for filtering
-    df['Date'] = pd.to_datetime(df['Date']).dt.date
+    
+    # --- SAFETY FIX: Handle Date Errors Automatically ---
+    # This line prevents the crash by fixing bad date formats
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
+    
+    # If any dates were corrupted (NaT), remove those rows to keep app running
+    if df['Date'].isna().any():
+        df = df.dropna(subset=['Date'])
     
     masters = load_masters()
 
@@ -113,14 +110,10 @@ def main():
     # ==========================================
     if choice == "1. Closing Stock (Dashboard)":
         st.header("📊 Closing Stock")
-        
-        # --- Date Filter ---
         col_d1, col_d2 = st.columns([1, 3])
         view_date = col_d1.date_input("Stock as of:", datetime.now())
         
-        # Filter Data by Date
         filtered_stock_df = df[df['Date'] <= view_date]
-        
         stock_df = filtered_stock_df.groupby("Item_Name")[['Quantity']].sum().reset_index()
         stock_df.columns = ["Item", "Stock"]
         
@@ -146,7 +139,6 @@ def main():
             b_date = col_top1.date_input("Entry Date", datetime.now())
             batch_id = col_top2.text_input("Batch ID", get_next_id(df, "BAT"))
             
-            # --- FORM ---
             st.subheader("1. New Entry")
             with st.expander("📝 Open Entry Form", expanded=True):
                 st.write("Enter quantity for items used:")
@@ -176,18 +168,14 @@ def main():
                         st.success("Batch Recorded!")
                         st.rerun()
 
-            # --- DAILY LOG ---
             st.markdown("---")
             st.subheader(f"📅 Log for {b_date}")
-            
-            # Filter for this date and Type related to Batch
             mask = (df['Date'] == b_date) & (df['Type'].str.contains("Batch"))
             daily_df = df[mask]
             
             if not daily_df.empty:
-                st.info("💡 You can edit entries below directly. Click 'Save Updates' when done.")
+                st.info("💡 Edit entries below.")
                 edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="batch_editor")
-                
                 if st.button("Save Updates (Batch Log)"):
                     df = update_database_from_editor(df, edited_daily)
                     save_data(df, TRANS_FILE)
@@ -201,7 +189,6 @@ def main():
     # ==========================================
     elif choice == "3. Ball Mill":
         st.header("⚙️ Ball Mill Management")
-        
         m_date = st.date_input("Entry Date", datetime.now())
         
         tab1, tab2 = st.tabs(["🆕 Start New Process", "🔄 Update/Finish Active"])
@@ -264,7 +251,6 @@ def main():
                             st.success(f"Production Recorded!")
                             st.rerun()
 
-        # --- DAILY LOG ---
         st.markdown("---")
         st.subheader(f"📅 Log for {m_date}")
         mask = (df['Date'] == m_date) & (df['Type'].str.contains("Mill"))
@@ -286,7 +272,6 @@ def main():
     # ==========================================
     elif choice == "4. Sales":
         st.header("🚚 Sales Entry")
-        
         col_chk1, col_chk2 = st.columns(2)
         if not customers: col_chk1.warning("⚠️ No Customers.")
         if not grades: col_chk2.warning("⚠️ No Grades.")
@@ -294,7 +279,6 @@ def main():
         s_date = st.date_input("Sales Date", datetime.now())
         
         if customers and grades:
-            # --- FORM ---
             with st.expander("📝 New Sale", expanded=True):
                 with st.form("sales_entry"):
                     cust = st.selectbox("Customer", customers)
@@ -313,7 +297,6 @@ def main():
                         st.success("Sale Recorded!")
                         st.rerun()
 
-            # --- DAILY LOG ---
             st.markdown("---")
             st.subheader(f"📅 Log for {s_date}")
             mask = (df['Date'] == s_date) & (df['Type'] == "Sales")
@@ -335,7 +318,6 @@ def main():
     # ==========================================
     elif choice == "5. Purchase":
         st.header("🛒 Purchase Entry")
-        
         col_chk1, col_chk2 = st.columns(2)
         if not suppliers: col_chk1.warning("⚠️ No Suppliers.")
         if not raw_materials: col_chk2.warning("⚠️ No Items.")
@@ -343,7 +325,6 @@ def main():
         p_date = st.date_input("Purchase Date", datetime.now())
 
         if suppliers and raw_materials:
-            # --- FORM ---
             with st.expander("📝 New Purchase", expanded=True):
                 with st.form("purchase_form"):
                     supplier = st.selectbox("Supplier", suppliers)
@@ -365,7 +346,6 @@ def main():
                         st.success(f"Saved! ID: {new_id}")
                         st.rerun()
 
-            # --- DAILY LOG ---
             st.markdown("---")
             st.subheader(f"📅 Log for {p_date}")
             mask = (df['Date'] == p_date) & (df['Type'] == "Purchase")
@@ -390,14 +370,12 @@ def main():
         
         type_filter = st.radio("Select Type", ["Supplier", "Customer"], horizontal=True)
         party_list = suppliers if type_filter == "Supplier" else customers
-            
         selected_party = st.selectbox(f"Select {type_filter}", ["All"] + party_list)
         
         if selected_party != "All":
             ledger_data = df[df['Party_Name'] == selected_party]
         else:
             ledger_data = df[df['Party_Name'].isin(party_list)]
-            
         st.dataframe(ledger_data, use_container_width=True)
 
     # ==========================================
