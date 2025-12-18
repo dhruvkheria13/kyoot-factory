@@ -83,11 +83,17 @@ def get_mill_status(df, all_mills):
 def main():
     st.title("🏭 Factory Inventory System")
     
-    # Load Data & Fix Dates
+    # Load Data
     df = load_transactions()
+    
+    # --- CRITICAL FIX 1: Fix Dates ---
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
     if df['Date'].isna().any():
         df = df.dropna(subset=['Date'])
+        
+    # --- CRITICAL FIX 2: Force Quantity to Numbers ---
+    # This fixes the "Length mismatch" error by ensuring sum() always works
+    df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce').fillna(0.0)
     
     masters = load_masters()
 
@@ -131,37 +137,34 @@ def main():
     st.sidebar.download_button("Download Masters", csv_masters, 'backup_masters.csv', 'text/csv')
 
     # ==========================================
-    # 1. CLOSING STOCK (UPDATED LOGIC)
+    # 1. CLOSING STOCK
     # ==========================================
     if choice == "1. Closing Stock (Dashboard)":
         st.header("📊 Closing Stock")
         
-        # 1. Find the LATEST date in the database to default to
+        # 1. Smart Date Default
         if not df.empty:
             max_date_in_db = df['Date'].max()
         else:
             max_date_in_db = date.today()
             
-        # 2. Date Filter
         col_d1, col_d2 = st.columns([1, 3])
-        # Default value is now max_date_in_db so you always see your latest entries
         view_date = col_d1.date_input("Stock as of:", max_date_in_db)
         
         filtered_stock_df = df[df['Date'] <= view_date]
         
-        # 3. Calculate Stock
+        # 2. Calculate Stock (With Safer Renaming)
         stock_df = filtered_stock_df.groupby("Item_Name")[['Quantity']].sum().reset_index()
-        stock_df.columns = ["Item", "Stock"]
+        # Safer rename that won't crash even if columns are missing
+        stock_df = stock_df.rename(columns={"Item_Name": "Item", "Quantity": "Stock"})
         
-        # 4. Display Split
+        # 3. Display
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Raw Materials")
-            # Only show items explicitly listed in Master Data as "Material"
             st.dataframe(stock_df[stock_df['Item'].isin(raw_materials)], hide_index=True, use_container_width=True)
         with c2:
             st.subheader("Finished Grades / Lumps / Pot Mix")
-            # Show EVERYTHING else (Grades, Batches, Pot Mixes)
             st.dataframe(stock_df[~stock_df['Item'].isin(raw_materials)], hide_index=True, use_container_width=True)
 
     # ==========================================
@@ -315,7 +318,6 @@ def main():
         p_date = col_p1.date_input("Entry Date", datetime.now())
         pot_id = col_p2.text_input("Pot ID", get_next_id(df, "POT"))
         
-        # Items available to mix: Raw Mats + Finished Grades + UF Lumps
         all_items = raw_materials + grades + ["UF Lumps (Batches)"]
         
         if not raw_materials and not grades:
@@ -368,7 +370,6 @@ def main():
                         st.success("Mixing Recorded!")
                         st.rerun()
 
-            # Log
             st.markdown("---")
             mask = (df['Date'] == p_date) & (df['Type'].str.contains("Pot"))
             daily_df = df[mask]
@@ -423,7 +424,6 @@ def main():
                             st.success(f"Sold {qty_sold} {unit_sold}!")
                             st.rerun()
 
-            # Log
             st.markdown("---")
             mask = (df['Date'] == s_date) & (df['Type'] == "Sales")
             daily_df = df[mask]
@@ -468,7 +468,6 @@ def main():
                         st.success(f"Saved! ID: {new_id}")
                         st.rerun()
 
-            # Log
             st.markdown("---")
             mask = (df['Date'] == p_date) & (df['Type'] == "Purchase")
             daily_df = df[mask]
