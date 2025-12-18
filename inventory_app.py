@@ -54,48 +54,28 @@ def update_database_from_editor(original_df, edited_subset):
 
 # --- Helper: Get Mill Status ---
 def get_mill_status(df, all_mills):
-    """
-    Returns two lists: 
-    1. open_mills (Mills that have started but not finished)
-    2. available_mills (Mills ready to start)
-    Also returns a dictionary of content for open mills.
-    """
     open_mills = []
     mill_contents = {}
     
-    # Filter only mill-related entries
     mill_df = df[df['Ball_Mill_ID'].isin(all_mills)].copy()
-    
-    # Sort by date/ID to ensure chronological order
     mill_df = mill_df.sort_values(by=['Date', 'ID'])
 
     for mill in all_mills:
-        # Get entries for this specific mill
         this_mill_entries = mill_df[mill_df['Ball_Mill_ID'] == mill]
-        
-        if this_mill_entries.empty:
-            continue
+        if this_mill_entries.empty: continue
             
-        # Check the LAST entry type
         last_entry = this_mill_entries.iloc[-1]
         
-        # If the last thing that happened was Start or Consumption, it's OPEN.
-        # If the last thing was Production (Finish), it's CLOSED.
         if "Production" not in last_entry['Type'] and last_entry['Status'] != "Completed":
             open_mills.append(mill)
-            
-            # Find the start of this current run
-            # We look backwards for the last "Mill_Production" to find the cut-off
-            # OR simpler: just take all entries since the last "Mill_Start"
-            
-            # Get current run entries
-            # Logic: Find the last 'Mill_Start' and take everything from there
             starts = this_mill_entries[this_mill_entries['Type'] == 'Mill_Start']
             if not starts.empty:
                 last_start_idx = starts.index[-1]
-                # content is everything from last start onwards
                 content_df = this_mill_entries.loc[last_start_idx:]
-                mill_contents[mill] = content_df[['Date', 'Item_Name', 'Quantity', 'Unit']]
+                # Clean up display: positive numbers
+                display_df = content_df[['Date', 'Item_Name', 'Quantity', 'Unit']].copy()
+                display_df['Quantity'] = display_df['Quantity'].abs()
+                mill_contents[mill] = display_df
 
     available_mills = [m for m in all_mills if m not in open_mills]
     return open_mills, available_mills, mill_contents
@@ -227,7 +207,7 @@ def main():
                     st.rerun()
 
     # ==========================================
-    # 3. BALL MILL (UPDATED)
+    # 3. BALL MILL
     # ==========================================
     elif choice == "3. Ball Mill":
         st.header("⚙️ Ball Mill Management")
@@ -235,7 +215,6 @@ def main():
         
         tab1, tab2 = st.tabs(["🆕 Start New Process", "🔄 Update/Finish Active"])
         
-        # --- TAB 1: START NEW ---
         with tab1:
             if not available_mills:
                 st.info("🚫 All Ball Mills are currently running. Finish one in the 'Update' tab to free it up.")
@@ -255,7 +234,6 @@ def main():
                         st.success(f"{mill_select} Started!")
                         st.rerun()
 
-        # --- TAB 2: UPDATE ACTIVE ---
         with tab2:
             if not open_mills:
                 st.info("📭 No mills are currently running.")
@@ -265,14 +243,10 @@ def main():
                 # --- SHOW CURRENT CONTENTS ---
                 st.markdown(f"**📦 Inside {active_mill}:**")
                 if active_mill in mill_contents:
-                    # Invert negative quantities to positive for display so user sees "Used 500" not "Used -500"
-                    display_content = mill_contents[active_mill].copy()
-                    display_content['Quantity'] = display_content['Quantity'].abs()
-                    st.dataframe(display_content, use_container_width=True, hide_index=True)
+                    st.dataframe(mill_contents[active_mill], use_container_width=True, hide_index=True)
                 
                 st.markdown("---")
                 
-                # Action Buttons
                 action_type = st.radio("Action", ["Add Material", "Finish & Produce Bags"])
                 
                 if action_type == "Add Material":
@@ -320,31 +294,28 @@ def main():
                 st.rerun()
 
     # ==========================================
-    # 4. POT (MIXING) - NEW
+    # 4. POT (MIXING)
     # ==========================================
     elif choice == "4. Pot (Mixing)":
         st.header("🍯 Pot Mixing")
-        st.info("Mix Raw Materials & Finished Goods to create new products.")
+        st.info("Mix Raw Materials, Grades, or Lumps to create new products.")
         
         col_p1, col_p2 = st.columns(2)
         p_date = col_p1.date_input("Entry Date", datetime.now())
         pot_id = col_p2.text_input("Pot ID", get_next_id(df, "POT"))
         
-        # Combine lists: User can pick from Raw Materials OR Grades (Finished Goods)
-        all_items = raw_materials + grades
+        # ADD "UF Lumps (Batches)" manually to the list of available items
+        all_items = raw_materials + grades + ["UF Lumps (Batches)"]
         
-        if not all_items:
+        if not raw_materials and not grades:
             st.warning("No Items found in Master Data.")
         else:
             with st.expander("📝 New Mixing Entry", expanded=True):
                 st.subheader("Input (Consumption)")
                 st.write("Add items to the pot:")
                 
-                # Dynamic Table for inputs
-                # We start with 3 empty rows
                 default_rows = pd.DataFrame([{"Item": "", "Quantity": 0.0} for _ in range(3)])
                 
-                # Column config allows dropdown in table
                 edited_inputs = st.data_editor(
                     default_rows,
                     num_rows="dynamic",
@@ -375,10 +346,12 @@ def main():
                     # 1. Consumption
                     for index, row in edited_inputs.iterrows():
                         if row['Item'] and row['Quantity'] > 0:
+                            # Handle Unit: If it is Lumps, unit is Batches, else Kg/L
+                            u = "Batches" if "Lumps" in row['Item'] else "Kg/L"
                             new_entries.append({
                                 "Date": p_date, "Type": "Pot_Consumption", "ID": f"{pot_id}-IN-{index}",
                                 "Item_Name": row['Item'], "Quantity": -row['Quantity'], 
-                                "Unit": "Kg/L", "Batch_ID": pot_id
+                                "Unit": u, "Batch_ID": pot_id
                             })
                     
                     # 2. Production
