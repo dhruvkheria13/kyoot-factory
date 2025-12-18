@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, date
 
 # --- Configuration & Setup ---
 st.set_page_config(page_title="Factory Inventory", layout="wide", page_icon="🏭")
@@ -72,7 +72,6 @@ def get_mill_status(df, all_mills):
             if not starts.empty:
                 last_start_idx = starts.index[-1]
                 content_df = this_mill_entries.loc[last_start_idx:]
-                # Clean up display: positive numbers
                 display_df = content_df[['Date', 'Item_Name', 'Quantity', 'Unit']].copy()
                 display_df['Quantity'] = display_df['Quantity'].abs()
                 mill_contents[mill] = display_df
@@ -99,7 +98,6 @@ def main():
     customers = masters[masters['Type'] == 'Customer']['Name'].unique().tolist()
     mills = ["Ball Mill 1", "Ball Mill 2", "Ball Mill 3", "Ball Mill 4", "Ball Mill 5"]
 
-    # Calculate Mill Status dynamically
     open_mills, available_mills, mill_contents = get_mill_status(df, mills)
 
     # --- SIDEBAR NAVIGATION ---
@@ -133,12 +131,20 @@ def main():
     st.sidebar.download_button("Download Masters", csv_masters, 'backup_masters.csv', 'text/csv')
 
     # ==========================================
-    # 1. CLOSING STOCK
+    # 1. CLOSING STOCK (UPDATED)
     # ==========================================
     if choice == "1. Closing Stock (Dashboard)":
         st.header("📊 Closing Stock")
+        
+        # --- SMART DATE DEFAULT ---
+        # Find the absolute latest date in the database to ensure new entries aren't hidden
+        if not df.empty:
+            max_db_date = df['Date'].max()
+        else:
+            max_db_date = date.today()
+            
         col_d1, col_d2 = st.columns([1, 3])
-        view_date = col_d1.date_input("Stock as of:", datetime.now())
+        view_date = col_d1.date_input("Stock as of:", max_db_date)
         
         filtered_stock_df = df[df['Date'] <= view_date]
         stock_df = filtered_stock_df.groupby("Item_Name")[['Quantity']].sum().reset_index()
@@ -151,6 +157,11 @@ def main():
         with c2:
             st.subheader("Finished Grades & Batches")
             st.dataframe(stock_df[~stock_df['Item'].isin(raw_materials)], hide_index=True, use_container_width=True)
+            
+        # --- DEBUG VIEW ---
+        with st.expander("🔎 Check Recent Transactions (Debug)", expanded=False):
+            st.write("If stock looks wrong, check if your entry appears here:")
+            st.dataframe(df.sort_values(by="ID", ascending=False).head(10), use_container_width=True)
 
     # ==========================================
     # 2. BATCH ENTRY
@@ -240,7 +251,6 @@ def main():
             else:
                 active_mill = st.selectbox("Select Running Mill", open_mills, key="act_mill")
                 
-                # --- SHOW CURRENT CONTENTS ---
                 st.markdown(f"**📦 Inside {active_mill}:**")
                 if active_mill in mill_contents:
                     st.dataframe(mill_contents[active_mill], use_container_width=True, hide_index=True)
@@ -281,7 +291,6 @@ def main():
                             st.success(f"Production Recorded!")
                             st.rerun()
 
-        # Log
         st.markdown("---")
         mask = (df['Date'] == m_date) & (df['Type'].str.contains("Mill"))
         daily_df = df[mask]
@@ -304,7 +313,6 @@ def main():
         p_date = col_p1.date_input("Entry Date", datetime.now())
         pot_id = col_p2.text_input("Pot ID", get_next_id(df, "POT"))
         
-        # ADD "UF Lumps (Batches)" manually to the list of available items
         all_items = raw_materials + grades + ["UF Lumps (Batches)"]
         
         if not raw_materials and not grades:
@@ -312,24 +320,14 @@ def main():
         else:
             with st.expander("📝 New Mixing Entry", expanded=True):
                 st.subheader("Input (Consumption)")
-                st.write("Add items to the pot:")
-                
                 default_rows = pd.DataFrame([{"Item": "", "Quantity": 0.0} for _ in range(3)])
                 
                 edited_inputs = st.data_editor(
                     default_rows,
                     num_rows="dynamic",
                     column_config={
-                        "Item": st.column_config.SelectboxColumn(
-                            "Item",
-                            options=all_items,
-                            required=True
-                        ),
-                        "Quantity": st.column_config.NumberColumn(
-                            "Quantity",
-                            min_value=0.0,
-                            step=0.1
-                        )
+                        "Item": st.column_config.SelectboxColumn("Item", options=all_items, required=True),
+                        "Quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, step=0.1)
                     },
                     use_container_width=True,
                     key="pot_inputs"
@@ -343,10 +341,9 @@ def main():
                 
                 if st.button("Save Pot Mix"):
                     new_entries = []
-                    # 1. Consumption
+                    # Consumption
                     for index, row in edited_inputs.iterrows():
                         if row['Item'] and row['Quantity'] > 0:
-                            # Handle Unit: If it is Lumps, unit is Batches, else Kg/L
                             u = "Batches" if "Lumps" in row['Item'] else "Kg/L"
                             new_entries.append({
                                 "Date": p_date, "Type": "Pot_Consumption", "ID": f"{pot_id}-IN-{index}",
@@ -354,7 +351,7 @@ def main():
                                 "Unit": u, "Batch_ID": pot_id
                             })
                     
-                    # 2. Production
+                    # Production - THIS LOGIC ADDS STOCK
                     if out_qty > 0:
                         new_entries.append({
                             "Date": p_date, "Type": "Pot_Production", "ID": f"{pot_id}-OUT",
@@ -368,7 +365,6 @@ def main():
                         st.success("Mixing Recorded!")
                         st.rerun()
 
-            # Log
             st.markdown("---")
             mask = (df['Date'] == p_date) & (df['Type'].str.contains("Pot"))
             daily_df = df[mask]
@@ -423,7 +419,6 @@ def main():
                             st.success(f"Sold {qty_sold} {unit_sold}!")
                             st.rerun()
 
-            # Log
             st.markdown("---")
             mask = (df['Date'] == s_date) & (df['Type'] == "Sales")
             daily_df = df[mask]
@@ -468,7 +463,6 @@ def main():
                         st.success(f"Saved! ID: {new_id}")
                         st.rerun()
 
-            # Log
             st.markdown("---")
             mask = (df['Date'] == p_date) & (df['Type'] == "Purchase")
             daily_df = df[mask]
