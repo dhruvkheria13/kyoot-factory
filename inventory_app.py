@@ -52,29 +52,75 @@ def update_database_from_editor(original_df, edited_subset):
     df_indexed.update(subset_indexed)
     return df_indexed.reset_index()
 
+# --- Helper: Get Mill Status ---
+def get_mill_status(df, all_mills):
+    """
+    Returns two lists: 
+    1. open_mills (Mills that have started but not finished)
+    2. available_mills (Mills ready to start)
+    Also returns a dictionary of content for open mills.
+    """
+    open_mills = []
+    mill_contents = {}
+    
+    # Filter only mill-related entries
+    mill_df = df[df['Ball_Mill_ID'].isin(all_mills)].copy()
+    
+    # Sort by date/ID to ensure chronological order
+    mill_df = mill_df.sort_values(by=['Date', 'ID'])
+
+    for mill in all_mills:
+        # Get entries for this specific mill
+        this_mill_entries = mill_df[mill_df['Ball_Mill_ID'] == mill]
+        
+        if this_mill_entries.empty:
+            continue
+            
+        # Check the LAST entry type
+        last_entry = this_mill_entries.iloc[-1]
+        
+        # If the last thing that happened was Start or Consumption, it's OPEN.
+        # If the last thing was Production (Finish), it's CLOSED.
+        if "Production" not in last_entry['Type'] and last_entry['Status'] != "Completed":
+            open_mills.append(mill)
+            
+            # Find the start of this current run
+            # We look backwards for the last "Mill_Production" to find the cut-off
+            # OR simpler: just take all entries since the last "Mill_Start"
+            
+            # Get current run entries
+            # Logic: Find the last 'Mill_Start' and take everything from there
+            starts = this_mill_entries[this_mill_entries['Type'] == 'Mill_Start']
+            if not starts.empty:
+                last_start_idx = starts.index[-1]
+                # content is everything from last start onwards
+                content_df = this_mill_entries.loc[last_start_idx:]
+                mill_contents[mill] = content_df[['Date', 'Item_Name', 'Quantity', 'Unit']]
+
+    available_mills = [m for m in all_mills if m not in open_mills]
+    return open_mills, available_mills, mill_contents
+
 # --- Main App Interface ---
 def main():
     st.title("🏭 Factory Inventory System")
     
-    # Load Data
+    # Load Data & Fix Dates
     df = load_transactions()
-    
-    # --- SAFETY FIX: Handle Date Errors Automatically ---
-    # This line prevents the crash by fixing bad date formats
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
-    
-    # If any dates were corrupted (NaT), remove those rows to keep app running
     if df['Date'].isna().any():
         df = df.dropna(subset=['Date'])
     
     masters = load_masters()
 
-    # Get Lists from Masters
+    # Get Lists
     raw_materials = masters[masters['Type'] == 'Material']['Name'].unique().tolist()
     grades = masters[masters['Type'] == 'Grade']['Name'].unique().tolist()
     suppliers = masters[masters['Type'] == 'Supplier']['Name'].unique().tolist()
     customers = masters[masters['Type'] == 'Customer']['Name'].unique().tolist()
     mills = ["Ball Mill 1", "Ball Mill 2", "Ball Mill 3", "Ball Mill 4", "Ball Mill 5"]
+
+    # Calculate Mill Status dynamically
+    open_mills, available_mills, mill_contents = get_mill_status(df, mills)
 
     # --- SIDEBAR NAVIGATION ---
     st.sidebar.title("Navigation")
@@ -82,11 +128,12 @@ def main():
         "1. Closing Stock (Dashboard)",
         "2. Batch Entry",
         "3. Ball Mill",
-        "4. Sales",
-        "5. Purchase",
-        "6. Party Ledgers",
-        "7. View Data",
-        "8. Master Data"
+        "4. Pot (Mixing)",
+        "5. Sales",
+        "6. Purchase",
+        "7. Party Ledgers",
+        "8. View Data",
+        "9. Master Data"
     ]
     
     try:
@@ -97,7 +144,7 @@ def main():
     choice = st.sidebar.radio("Go to", menu_options, index=current_index)
     st.session_state.page = choice
 
-    # --- SIDEBAR BACKUP ---
+    # --- BACKUP ---
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 💾 Backup Data")
     csv_trans = df.to_csv(index=False).encode('utf-8')
@@ -106,7 +153,7 @@ def main():
     st.sidebar.download_button("Download Masters", csv_masters, 'backup_masters.csv', 'text/csv')
 
     # ==========================================
-    # 1. CLOSING STOCK (DASHBOARD)
+    # 1. CLOSING STOCK
     # ==========================================
     if choice == "1. Closing Stock (Dashboard)":
         st.header("📊 Closing Stock")
@@ -133,18 +180,17 @@ def main():
         
         if not raw_materials:
             st.warning("⚠️ No Raw Materials found.")
-            if st.button("➕ Add Raw Materials in Master"): navigate_to("8. Master Data")
+            if st.button("➕ Add Raw Materials in Master"): navigate_to("9. Master Data")
         else:
             col_top1, col_top2 = st.columns(2)
             b_date = col_top1.date_input("Entry Date", datetime.now())
             batch_id = col_top2.text_input("Batch ID", get_next_id(df, "BAT"))
             
-            st.subheader("1. New Entry")
-            with st.expander("📝 Open Entry Form", expanded=True):
+            with st.expander("📝 New Entry", expanded=True):
                 st.write("Enter quantity for items used:")
                 input_data = [{"Item": mat, "Quantity": 0.0} for mat in raw_materials]
                 input_df = pd.DataFrame(input_data)
-                edited_input = st.data_editor(input_df, num_rows="fixed", use_container_width=True, height=200, key="batch_input")
+                edited_input = st.data_editor(input_df, num_rows="fixed", use_container_width=True, height=200, key="batch_in")
                 
                 batches_made = st.number_input("No. of Batches Made", min_value=0.0, step=0.1, format="%.2f")
                 
@@ -172,20 +218,16 @@ def main():
             st.subheader(f"📅 Log for {b_date}")
             mask = (df['Date'] == b_date) & (df['Type'].str.contains("Batch"))
             daily_df = df[mask]
-            
             if not daily_df.empty:
-                st.info("💡 Edit entries below.")
-                edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="batch_editor")
-                if st.button("Save Updates (Batch Log)"):
+                edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="batch_log")
+                if st.button("Save Updates (Batch)"):
                     df = update_database_from_editor(df, edited_daily)
                     save_data(df, TRANS_FILE)
-                    st.success("Changes Saved!")
+                    st.success("Updated!")
                     st.rerun()
-            else:
-                st.caption("No batches recorded on this date.")
 
     # ==========================================
-    # 3. BALL MILL
+    # 3. BALL MILL (UPDATED)
     # ==========================================
     elif choice == "3. Ball Mill":
         st.header("⚙️ Ball Mill Management")
@@ -193,30 +235,47 @@ def main():
         
         tab1, tab2 = st.tabs(["🆕 Start New Process", "🔄 Update/Finish Active"])
         
+        # --- TAB 1: START NEW ---
         with tab1:
-            with st.form("mill_start"):
-                mill_select = st.selectbox("Select Mill", mills)
-                batches_in = st.number_input("No. of UF Batches to Load", min_value=0.0, step=0.5)
-                if st.form_submit_button("Start Milling"):
-                    ts = str(int(datetime.now().timestamp()))
-                    entry = {
-                        "Date": m_date, "Type": "Mill_Start", "ID": f"MIL-{ts}",
-                        "Ball_Mill_ID": mill_select, "Item_Name": "UF Lumps (Batches)",
-                        "Quantity": -batches_in, "Unit": "Batches", "Status": "In Progress"
-                    }
-                    df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
-                    save_data(df, TRANS_FILE)
-                    st.success(f"{mill_select} Started!")
-                    st.rerun()
+            if not available_mills:
+                st.info("🚫 All Ball Mills are currently running. Finish one in the 'Update' tab to free it up.")
+            else:
+                with st.form("mill_start"):
+                    mill_select = st.selectbox("Select Empty Mill", available_mills)
+                    batches_in = st.number_input("No. of UF Batches to Load", min_value=0.0, step=0.5)
+                    if st.form_submit_button("Start Milling"):
+                        ts = str(int(datetime.now().timestamp()))
+                        entry = {
+                            "Date": m_date, "Type": "Mill_Start", "ID": f"MIL-{ts}",
+                            "Ball_Mill_ID": mill_select, "Item_Name": "UF Lumps (Batches)",
+                            "Quantity": -batches_in, "Unit": "Batches", "Status": "In Progress"
+                        }
+                        df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
+                        save_data(df, TRANS_FILE)
+                        st.success(f"{mill_select} Started!")
+                        st.rerun()
 
+        # --- TAB 2: UPDATE ACTIVE ---
         with tab2:
-            active_mill = st.selectbox("Select Active Mill", mills, key="act_mill")
-            action_type = st.radio("Action", ["Add Material", "Finish & Produce Bags"])
-            
-            if action_type == "Add Material":
-                if not raw_materials:
-                     st.warning("No materials defined.")
-                else:
+            if not open_mills:
+                st.info("📭 No mills are currently running.")
+            else:
+                active_mill = st.selectbox("Select Running Mill", open_mills, key="act_mill")
+                
+                # --- SHOW CURRENT CONTENTS ---
+                st.markdown(f"**📦 Inside {active_mill}:**")
+                if active_mill in mill_contents:
+                    # Invert negative quantities to positive for display so user sees "Used 500" not "Used -500"
+                    display_content = mill_contents[active_mill].copy()
+                    display_content['Quantity'] = display_content['Quantity'].abs()
+                    st.dataframe(display_content, use_container_width=True, hide_index=True)
+                
+                st.markdown("---")
+                
+                # Action Buttons
+                action_type = st.radio("Action", ["Add Material", "Finish & Produce Bags"])
+                
+                if action_type == "Add Material":
                     with st.form("add_mat"):
                         mat_item = st.selectbox("Material", raw_materials)
                         mat_qty = st.number_input("Quantity (Kg)", min_value=0.0, step=0.1)
@@ -232,10 +291,7 @@ def main():
                             st.success("Added!")
                             st.rerun()
 
-            elif action_type == "Finish & Produce Bags":
-                if not grades:
-                     st.warning("No Grades defined.")
-                else:
+                elif action_type == "Finish & Produce Bags":
                     with st.form("finish_mill"):
                         out_grade = st.selectbox("Produced Grade", grades)
                         bags = st.number_input("No. of Bags Produced", min_value=1)
@@ -251,72 +307,165 @@ def main():
                             st.success(f"Production Recorded!")
                             st.rerun()
 
+        # Log
         st.markdown("---")
-        st.subheader(f"📅 Log for {m_date}")
         mask = (df['Date'] == m_date) & (df['Type'].str.contains("Mill"))
         daily_df = df[mask]
-        
         if not daily_df.empty:
-            st.info("💡 Edit mill entries below.")
-            edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="mill_editor")
-            if st.button("Save Updates (Mill Log)"):
+            edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="mill_log")
+            if st.button("Save Updates (Mill)"):
                 df = update_database_from_editor(df, edited_daily)
                 save_data(df, TRANS_FILE)
-                st.success("Changes Saved!")
+                st.success("Updated!")
                 st.rerun()
-        else:
-            st.caption("No ball mill activity on this date.")
 
     # ==========================================
-    # 4. SALES
+    # 4. POT (MIXING) - NEW
     # ==========================================
-    elif choice == "4. Sales":
+    elif choice == "4. Pot (Mixing)":
+        st.header("🍯 Pot Mixing")
+        st.info("Mix Raw Materials & Finished Goods to create new products.")
+        
+        col_p1, col_p2 = st.columns(2)
+        p_date = col_p1.date_input("Entry Date", datetime.now())
+        pot_id = col_p2.text_input("Pot ID", get_next_id(df, "POT"))
+        
+        # Combine lists: User can pick from Raw Materials OR Grades (Finished Goods)
+        all_items = raw_materials + grades
+        
+        if not all_items:
+            st.warning("No Items found in Master Data.")
+        else:
+            with st.expander("📝 New Mixing Entry", expanded=True):
+                st.subheader("Input (Consumption)")
+                st.write("Add items to the pot:")
+                
+                # Dynamic Table for inputs
+                # We start with 3 empty rows
+                default_rows = pd.DataFrame([{"Item": "", "Quantity": 0.0} for _ in range(3)])
+                
+                # Column config allows dropdown in table
+                edited_inputs = st.data_editor(
+                    default_rows,
+                    num_rows="dynamic",
+                    column_config={
+                        "Item": st.column_config.SelectboxColumn(
+                            "Item",
+                            options=all_items,
+                            required=True
+                        ),
+                        "Quantity": st.column_config.NumberColumn(
+                            "Quantity",
+                            min_value=0.0,
+                            step=0.1
+                        )
+                    },
+                    use_container_width=True,
+                    key="pot_inputs"
+                )
+                
+                st.subheader("Output (Production)")
+                c1, c2, c3 = st.columns(3)
+                out_item = c1.selectbox("Produced Grade", grades)
+                out_qty = c2.number_input("Quantity Produced", min_value=0.0, step=0.1)
+                out_unit = c3.selectbox("Unit", ["Bags", "Kg", "Litres"])
+                
+                if st.button("Save Pot Mix"):
+                    new_entries = []
+                    # 1. Consumption
+                    for index, row in edited_inputs.iterrows():
+                        if row['Item'] and row['Quantity'] > 0:
+                            new_entries.append({
+                                "Date": p_date, "Type": "Pot_Consumption", "ID": f"{pot_id}-IN-{index}",
+                                "Item_Name": row['Item'], "Quantity": -row['Quantity'], 
+                                "Unit": "Kg/L", "Batch_ID": pot_id
+                            })
+                    
+                    # 2. Production
+                    if out_qty > 0:
+                        new_entries.append({
+                            "Date": p_date, "Type": "Pot_Production", "ID": f"{pot_id}-OUT",
+                            "Item_Name": out_item, "Quantity": out_qty, 
+                            "Unit": out_unit, "Batch_ID": pot_id
+                        })
+                    
+                    if new_entries:
+                        df = pd.concat([df, pd.DataFrame(new_entries)], ignore_index=True)
+                        save_data(df, TRANS_FILE)
+                        st.success("Mixing Recorded!")
+                        st.rerun()
+
+            # Log
+            st.markdown("---")
+            mask = (df['Date'] == p_date) & (df['Type'].str.contains("Pot"))
+            daily_df = df[mask]
+            if not daily_df.empty:
+                edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="pot_log")
+                if st.button("Save Updates (Pot)"):
+                    df = update_database_from_editor(df, edited_daily)
+                    save_data(df, TRANS_FILE)
+                    st.success("Updated!")
+                    st.rerun()
+
+    # ==========================================
+    # 5. SALES
+    # ==========================================
+    elif choice == "5. Sales":
         st.header("🚚 Sales Entry")
         col_chk1, col_chk2 = st.columns(2)
         if not customers: col_chk1.warning("⚠️ No Customers.")
-        if not grades: col_chk2.warning("⚠️ No Grades.")
+        if not grades and not raw_materials: col_chk2.warning("⚠️ No Items.")
             
         s_date = st.date_input("Sales Date", datetime.now())
         
-        if customers and grades:
+        if customers and (grades or raw_materials):
             with st.expander("📝 New Sale", expanded=True):
                 with st.form("sales_entry"):
                     cust = st.selectbox("Customer", customers)
-                    grade_sold = st.selectbox("Grade", grades)
-                    bags_sold = st.number_input("Bags Sold", min_value=1)
+                    sale_cat = st.radio("Selling:", ["Finished Grade", "Raw Material"], horizontal=True)
+                    
+                    item_list = grades if sale_cat == "Finished Grade" else raw_materials
+                    default_unit = 0 if sale_cat == "Finished Grade" else 1
+                    
+                    if not item_list:
+                        st.error("No items found.")
+                        item_sold = None
+                    else:
+                        item_sold = st.selectbox("Item Name", item_list)
+                    
+                    c1, c2 = st.columns(2)
+                    qty_sold = c1.number_input("Quantity Sold", min_value=0.1, step=0.1)
+                    unit_sold = c2.selectbox("Unit", ["Bags", "Kg", "Litres", "Pieces"], index=default_unit)
                     
                     if st.form_submit_button("Record Sale"):
-                        new_id = get_next_id(df, "SAL")
-                        entry = {
-                            "Date": s_date, "Type": "Sales", "ID": new_id,
-                            "Party_Name": cust, "Item_Name": grade_sold,
-                            "Quantity": -bags_sold, "Unit": "Bags"
-                        }
-                        df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
-                        save_data(df, TRANS_FILE)
-                        st.success("Sale Recorded!")
-                        st.rerun()
+                        if item_sold:
+                            new_id = get_next_id(df, "SAL")
+                            entry = {
+                                "Date": s_date, "Type": "Sales", "ID": new_id,
+                                "Party_Name": cust, "Item_Name": item_sold,
+                                "Quantity": -qty_sold, "Unit": unit_sold
+                            }
+                            df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
+                            save_data(df, TRANS_FILE)
+                            st.success(f"Sold {qty_sold} {unit_sold}!")
+                            st.rerun()
 
+            # Log
             st.markdown("---")
-            st.subheader(f"📅 Log for {s_date}")
             mask = (df['Date'] == s_date) & (df['Type'] == "Sales")
             daily_df = df[mask]
-            
             if not daily_df.empty:
-                st.info("💡 Edit sales below.")
-                edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="sales_editor")
-                if st.button("Save Updates (Sales Log)"):
+                edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="sales_log")
+                if st.button("Save Updates (Sales)"):
                     df = update_database_from_editor(df, edited_daily)
                     save_data(df, TRANS_FILE)
-                    st.success("Changes Saved!")
+                    st.success("Updated!")
                     st.rerun()
-            else:
-                st.caption("No sales on this date.")
 
     # ==========================================
-    # 5. PURCHASE
+    # 6. PURCHASE
     # ==========================================
-    elif choice == "5. Purchase":
+    elif choice == "6. Purchase":
         st.header("🛒 Purchase Entry")
         col_chk1, col_chk2 = st.columns(2)
         if not suppliers: col_chk1.warning("⚠️ No Suppliers.")
@@ -346,28 +495,23 @@ def main():
                         st.success(f"Saved! ID: {new_id}")
                         st.rerun()
 
+            # Log
             st.markdown("---")
-            st.subheader(f"📅 Log for {p_date}")
             mask = (df['Date'] == p_date) & (df['Type'] == "Purchase")
             daily_df = df[mask]
-            
             if not daily_df.empty:
-                st.info("💡 Edit purchases below.")
-                edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="pur_editor")
-                if st.button("Save Updates (Purchase Log)"):
+                edited_daily = st.data_editor(daily_df, use_container_width=True, num_rows="dynamic", key="pur_log")
+                if st.button("Save Updates (Purchase)"):
                     df = update_database_from_editor(df, edited_daily)
                     save_data(df, TRANS_FILE)
-                    st.success("Changes Saved!")
+                    st.success("Updated!")
                     st.rerun()
-            else:
-                st.caption("No purchases on this date.")
 
     # ==========================================
-    # 6. PARTY LEDGERS
+    # 7. LEDGERS
     # ==========================================
-    elif choice == "6. Party Ledgers":
-        st.header("📒 Supplier & Customer Ledgers")
-        
+    elif choice == "7. Party Ledgers":
+        st.header("📒 Ledgers")
         type_filter = st.radio("Select Type", ["Supplier", "Customer"], horizontal=True)
         party_list = suppliers if type_filter == "Supplier" else customers
         selected_party = st.selectbox(f"Select {type_filter}", ["All"] + party_list)
@@ -379,22 +523,20 @@ def main():
         st.dataframe(ledger_data, use_container_width=True)
 
     # ==========================================
-    # 7. VIEW DATA
+    # 8. VIEW DATA
     # ==========================================
-    elif choice == "7. View Data":
+    elif choice == "8. View Data":
         st.header("💾 Master Log")
-        st.info("Full database view.")
         edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="main_editor")
         if st.button("Save Database Changes"):
             save_data(edited_df, TRANS_FILE)
             st.success("Saved!")
 
     # ==========================================
-    # 8. MASTER DATA
+    # 9. MASTER DATA
     # ==========================================
-    elif choice == "8. Master Data":
+    elif choice == "9. Master Data":
         st.header("🛠️ Master Data")
-        
         c1, c2 = st.columns([1, 2])
         with c1:
             st.subheader("Add New")
@@ -425,7 +567,7 @@ def main():
                         st.success(f"Added {m_name}")
                         st.rerun()
                     else:
-                        st.error("Invalid or Duplicate Name")
+                        st.error("Duplicate Name")
 
         with c2:
             st.subheader("List")
