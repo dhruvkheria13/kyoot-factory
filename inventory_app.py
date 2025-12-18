@@ -131,37 +131,38 @@ def main():
     st.sidebar.download_button("Download Masters", csv_masters, 'backup_masters.csv', 'text/csv')
 
     # ==========================================
-    # 1. CLOSING STOCK (UPDATED)
+    # 1. CLOSING STOCK (UPDATED LOGIC)
     # ==========================================
     if choice == "1. Closing Stock (Dashboard)":
         st.header("📊 Closing Stock")
         
-        # --- SMART DATE DEFAULT ---
-        # Find the absolute latest date in the database to ensure new entries aren't hidden
+        # 1. Find the LATEST date in the database to default to
         if not df.empty:
-            max_db_date = df['Date'].max()
+            max_date_in_db = df['Date'].max()
         else:
-            max_db_date = date.today()
+            max_date_in_db = date.today()
             
+        # 2. Date Filter
         col_d1, col_d2 = st.columns([1, 3])
-        view_date = col_d1.date_input("Stock as of:", max_db_date)
+        # Default value is now max_date_in_db so you always see your latest entries
+        view_date = col_d1.date_input("Stock as of:", max_date_in_db)
         
         filtered_stock_df = df[df['Date'] <= view_date]
+        
+        # 3. Calculate Stock
         stock_df = filtered_stock_df.groupby("Item_Name")[['Quantity']].sum().reset_index()
         stock_df.columns = ["Item", "Stock"]
         
+        # 4. Display Split
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Raw Materials")
+            # Only show items explicitly listed in Master Data as "Material"
             st.dataframe(stock_df[stock_df['Item'].isin(raw_materials)], hide_index=True, use_container_width=True)
         with c2:
-            st.subheader("Finished Grades & Batches")
+            st.subheader("Finished Grades / Lumps / Pot Mix")
+            # Show EVERYTHING else (Grades, Batches, Pot Mixes)
             st.dataframe(stock_df[~stock_df['Item'].isin(raw_materials)], hide_index=True, use_container_width=True)
-            
-        # --- DEBUG VIEW ---
-        with st.expander("🔎 Check Recent Transactions (Debug)", expanded=False):
-            st.write("If stock looks wrong, check if your entry appears here:")
-            st.dataframe(df.sort_values(by="ID", ascending=False).head(10), use_container_width=True)
 
     # ==========================================
     # 2. BATCH ENTRY
@@ -291,6 +292,7 @@ def main():
                             st.success(f"Production Recorded!")
                             st.rerun()
 
+        # Log
         st.markdown("---")
         mask = (df['Date'] == m_date) & (df['Type'].str.contains("Mill"))
         daily_df = df[mask]
@@ -313,6 +315,7 @@ def main():
         p_date = col_p1.date_input("Entry Date", datetime.now())
         pot_id = col_p2.text_input("Pot ID", get_next_id(df, "POT"))
         
+        # Items available to mix: Raw Mats + Finished Grades + UF Lumps
         all_items = raw_materials + grades + ["UF Lumps (Batches)"]
         
         if not raw_materials and not grades:
@@ -351,7 +354,7 @@ def main():
                                 "Unit": u, "Batch_ID": pot_id
                             })
                     
-                    # Production - THIS LOGIC ADDS STOCK
+                    # Production
                     if out_qty > 0:
                         new_entries.append({
                             "Date": p_date, "Type": "Pot_Production", "ID": f"{pot_id}-OUT",
@@ -365,6 +368,7 @@ def main():
                         st.success("Mixing Recorded!")
                         st.rerun()
 
+            # Log
             st.markdown("---")
             mask = (df['Date'] == p_date) & (df['Type'].str.contains("Pot"))
             daily_df = df[mask]
@@ -419,6 +423,7 @@ def main():
                             st.success(f"Sold {qty_sold} {unit_sold}!")
                             st.rerun()
 
+            # Log
             st.markdown("---")
             mask = (df['Date'] == s_date) & (df['Type'] == "Sales")
             daily_df = df[mask]
@@ -463,6 +468,7 @@ def main():
                         st.success(f"Saved! ID: {new_id}")
                         st.rerun()
 
+            # Log
             st.markdown("---")
             mask = (df['Date'] == p_date) & (df['Type'] == "Purchase")
             daily_df = df[mask]
